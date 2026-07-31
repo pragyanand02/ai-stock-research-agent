@@ -43,11 +43,7 @@ with st.sidebar:
     run_button = st.button("🔍 Generate Brief", type="primary", disabled=(not ticker_input))
     st.markdown("---")
     st.markdown("**Examples:** MSFT · GOOGL · TSLA · RELIANCE.NS · INFY.NS")
-    refresh_data = st.checkbox(
-        "Force refresh market data",
-        value=False,
-        help="Refresh latest data instead of using cached results.",
-    )
+    
 if run_button and ticker_input:
     with st.spinner(f"Running 3 parallel research agents for **{ticker_input}**… (30–60 seconds)"):
         stock = yf.Ticker(ticker_input)
