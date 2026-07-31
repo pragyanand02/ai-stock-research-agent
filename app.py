@@ -54,9 +54,11 @@ if run_button and ticker_input:
             st.stop()
         try:
             result = graph.invoke({"ticker": ticker_input})
-        except Exception:
-            import traceback
-            st.code(traceback.format_exc())
+        except Exception as e:
+            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+                st.error("⚠️ Gemini API rate limit exceeded. Please wait 1 minute and try again.")
+            else:
+                st.error(f"❌ Error: {e}")
             st.stop()
 
     try:
