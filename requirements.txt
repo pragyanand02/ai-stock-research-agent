@@ -1,0 +1,11 @@
+langgraph
+langchain
+langchain-openai
+yfinance
+numpy
+requests
+fastapi
+uvicorn
+streamlit
+python-dotenv
+langchain-google-genai
