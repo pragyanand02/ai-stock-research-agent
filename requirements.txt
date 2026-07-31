@@ -1,6 +1,5 @@
 langgraph
 langchain
-langchain-openai
 yfinance
 numpy
 requests

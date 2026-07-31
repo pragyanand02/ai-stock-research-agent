@@ -25,7 +25,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 
 from state import StockResearchState
-from openai import OpenAI
+
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ _llm_writer = ChatGoogleGenerativeAI(
     google_api_key=os.getenv("GOOGLE_API_KEY"),
     temperature=0.3,
 )
-NEWS_API_KEY = ""
+NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
 
 def _safe_latest(arr: np.ndarray) -> Optional[float]:
