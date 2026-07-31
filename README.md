@@ -63,6 +63,15 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+Create a `.env` file in the project root:
+
+```env
+GOOGLE_API_KEY=your_gemini_api_key
+NEWS_API_KEY=your_newsapi_key_optional
+```
+
+> `NEWS_API_KEY` is optional. If not provided, the application automatically falls back to Yahoo Finance news.
+
 Run the application:
 
 ```bash
