@@ -9,6 +9,7 @@ import sys
 import streamlit as st
 from dotenv import load_dotenv
 import yfinance as yf
+from ticker_resolver import resolve_ticker
 
 load_dotenv()
 
@@ -34,7 +35,7 @@ with st.sidebar:
         "Ticker Symbol",
         placeholder="e.g. MSFT, AAPL, RELIANCE.NS",
         help="Use .NS for NSE India, .BO for BSE India",
-    ).strip().upper()
+    ).strip()
     time_period = st.selectbox(
         "Chart Time Period",
         ["5d", "1mo", "3mo", "6mo", "1y"],
@@ -45,15 +46,22 @@ with st.sidebar:
     st.markdown("**Examples:** MSFT · GOOGL · TSLA · RELIANCE.NS · INFY.NS")
     
 if run_button and ticker_input:
+    resolved = resolve_ticker(ticker_input)
+
+    resolved_ticker = resolved["ticker"]
+
+    if not resolved_ticker:
+        st.error("❌ Could not resolve the stock ticker.")
+        st.stop()
     with st.spinner(f"Running 3 parallel research agents for **{ticker_input}**… (30–60 seconds)"):
-        stock = yf.Ticker(ticker_input)
+        stock = yf.Ticker(resolved_ticker)
         hist = stock.history(period=time_period)
 
         if hist.empty:
             st.error("❌ Invalid ticker or no market data available.")
             st.stop()
         try:
-            result = graph.invoke({"ticker": ticker_input})
+            result = graph.invoke({"ticker": resolved_ticker})
         except Exception as e:
             if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
                 st.error("⚠️ Gemini API rate limit exceeded. Please wait 1 minute and try again.")
@@ -84,6 +92,10 @@ if run_button and ticker_input:
     except Exception:
         st.warning("⚠️ Company details could not be loaded.")
     # --- Investment Brief (hero section) ---
+    if resolved_ticker != ticker_input.upper():
+        st.info(
+            f"🔎 Resolved **{ticker_input}** → **{resolved_ticker}**"
+        )
     st.success(f"Research complete for **{ticker_input}**!")
     st.toast("Research completed successfully! 🎉")
     st.balloons()
