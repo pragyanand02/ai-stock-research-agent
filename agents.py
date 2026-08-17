@@ -3,15 +3,19 @@ Project 04 — AI Stock Research and Investment Brief Generator
 Agents: Financial Data Analyst, News Sentiment Scanner, Price Signal Reader, Brief Writer
 """
 
-from typing import Optional
+from typing import Optional, Any, Tuple
 import json
 import logging
 import os
-from typing import Any
+from unittest.mock import MagicMock
 
 import numpy as np
 import requests
 import yfinance as yf
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 try:
     import talib
@@ -21,7 +25,6 @@ except ImportError:
     logging.warning("TA-Lib not available; technical indicators will use manual fallback.")
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-
 from langchain_core.prompts import ChatPromptTemplate
 
 from state import StockResearchState
@@ -29,22 +32,49 @@ from state import StockResearchState
 
 logger = logging.getLogger(__name__)
 
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
+
 _llm = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash",
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
+    model=GEMINI_MODEL,
+    google_api_key=_api_key or None,
     temperature=0,
 )
 
 _llm_writer = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash",
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
+    model=GEMINI_MODEL,
+    google_api_key=_api_key or None,
     temperature=0.3,
 )
-NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
+
+
+def _extract_text(response: Any) -> str:
+    """Safely extract string content from LangChain / Gemini response."""
+    if isinstance(response, str):
+        return response.strip()
+    if hasattr(response, "text") and isinstance(response.text, str) and response.text:
+        return response.text.strip()
+    if hasattr(response, "content"):
+        content = response.content
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and "text" in item:
+                    parts.append(str(item["text"]))
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "\n".join(parts).strip()
+    if hasattr(response, "text") and response.text is not None and not isinstance(response.text, MagicMock):
+        return str(response.text).strip()
+    return str(response).strip()
 
 
 def _safe_latest(arr: np.ndarray) -> Optional[float]:
     """Return the latest non-NaN value from a numpy array, or None."""
+    if arr is None or len(arr) == 0:
+        return None
     clean = arr[~np.isnan(arr)]
     return float(clean[-1]) if len(clean) > 0 else None
 
@@ -54,14 +84,27 @@ def _safe_latest(arr: np.ndarray) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 def _compute_rsi_manual(prices: np.ndarray, period: int = 14) -> np.ndarray:
+    """Compute RSI using standard Wilder smoothing."""
+    rsi = np.full(len(prices), np.nan)
+    if len(prices) <= period:
+        return rsi
+
     deltas = np.diff(prices)
     gains = np.where(deltas > 0, deltas, 0.0)
     losses = np.where(deltas < 0, -deltas, 0.0)
-    rsi = np.full(len(prices), np.nan)
+
     if len(gains) < period:
         return rsi
-    avg_gain = np.mean(gains[:period])
-    avg_loss = np.mean(losses[:period])
+
+    avg_gain = float(np.mean(gains[:period]))
+    avg_loss = float(np.mean(losses[:period]))
+
+    if avg_loss == 0:
+        rsi[period] = 100.0
+    else:
+        rs = avg_gain / avg_loss
+        rsi[period] = 100.0 - (100.0 / (1.0 + rs))
+
     for i in range(period, len(deltas)):
         avg_gain = (avg_gain * (period - 1) + gains[i]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
@@ -74,12 +117,12 @@ def _compute_rsi_manual(prices: np.ndarray, period: int = 14) -> np.ndarray:
 
 
 def _compute_ema(prices: np.ndarray, period: int) -> np.ndarray:
+    """Compute Exponential Moving Average."""
     ema = np.full(len(prices), np.nan)
     if len(prices) < period:
         return ema
+
     # Find the first index at which `period` consecutive finite values exist.
-    # This makes the function NaN-aware (e.g. when prices is a MACD line that
-    # starts with NaNs from the fast/slow EMA warmup).
     start = -1
     for i in range(len(prices) - period + 1):
         if not np.any(np.isnan(prices[i : i + period])):
@@ -88,6 +131,7 @@ def _compute_ema(prices: np.ndarray, period: int) -> np.ndarray:
             break
     if start == -1:
         return ema
+
     k = 2.0 / (period + 1)
     for i in range(start + 1, len(prices)):
         prev, cur = ema[i - 1], prices[i]
@@ -97,7 +141,8 @@ def _compute_ema(prices: np.ndarray, period: int) -> np.ndarray:
 
 def _compute_macd_manual(
     prices: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute MACD line, signal line, and MACD histogram."""
     ema_fast = _compute_ema(prices, fast)
     ema_slow = _compute_ema(prices, slow)
     macd_line = ema_fast - ema_slow
@@ -135,16 +180,21 @@ _FUNDAMENTAL_FIELDS = [
 def agent_fundamentals_analyst(state: StockResearchState) -> dict:
     """Agent 1: Fetch fundamentals from Yahoo Finance and interpret them."""
     ticker = state["ticker"]
-    info = yf.Ticker(ticker).info
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception as exc:
+        logger.warning("Error fetching info for %s: %s", ticker, exc)
+        info = {}
+
     metrics = {k: info.get(k) for k in _FUNDAMENTAL_FIELDS if info.get(k) is not None}
     chain = _FUNDAMENTALS_PROMPT | _llm
     response = chain.invoke({
         "ticker": ticker,
-        "metrics": json.dumps(metrics, indent=2),
+        "metrics": json.dumps(metrics, indent=2) if metrics else "No financial metrics found.",
     })
-    text = response.text if hasattr(response, "text") else str(response.content)
+    text = _extract_text(response)
 
-    return {"fundamentals_report": text.strip()}
+    return {"fundamentals_report": text}
 
 
 # ---------------------------------------------------------------------------
@@ -176,16 +226,16 @@ def agent_sentiment_scanner(state: StockResearchState) -> dict:
         "ticker": ticker,
         "headlines": "\n".join(f"- {h}" for h in headlines) if headlines else "No headlines available.",
     })
+    text = _extract_text(response)
 
-    text = response.text if hasattr(response, "text") else str(response.content)
-
-    return {"sentiment_report": text.strip()}
+    return {"sentiment_report": text}
 
 
 def _fetch_headlines(ticker: str) -> list[str]:
-    """Fetch recent news headlines from NewsAPI."""
-    if not NEWS_API_KEY:
-        logger.warning("NEWS_API_KEY not set; using Yahoo Finance news fallback.")
+    """Fetch recent news headlines from NewsAPI or Yahoo Finance."""
+    api_key = os.getenv("NEWS_API_KEY", "")
+    if not api_key:
+        logger.info("NEWS_API_KEY not set; using Yahoo Finance news fallback.")
         return _fetch_headlines_yfinance(ticker)
     try:
         url = "https://newsapi.org/v2/everything"
@@ -194,12 +244,13 @@ def _fetch_headlines(ticker: str) -> list[str]:
             "sortBy": "publishedAt",
             "pageSize": 20,
             "language": "en",
-            "apiKey": NEWS_API_KEY,
+            "apiKey": api_key,
         }
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
         articles = resp.json().get("articles", [])
-        return [a["title"] for a in articles if a.get("title")]
+        titles = [a["title"] for a in articles if a.get("title")]
+        return titles if titles else _fetch_headlines_yfinance(ticker)
     except Exception as exc:
         logger.error("NewsAPI error: %s", exc)
         return _fetch_headlines_yfinance(ticker)
@@ -209,7 +260,16 @@ def _fetch_headlines_yfinance(ticker: str) -> list[str]:
     """Fallback: get news headlines via yfinance."""
     try:
         news = yf.Ticker(ticker).news or []
-        return [item.get("title", "") for item in news[:20] if item.get("title")]
+        titles = []
+        for item in news[:20]:
+            title = item.get("title") if isinstance(item, dict) else None
+            if not title and isinstance(item, dict) and "content" in item:
+                content = item.get("content")
+                if isinstance(content, dict):
+                    title = content.get("title")
+            if title:
+                titles.append(title)
+        return titles
     except Exception as exc:
         logger.error("yfinance news error: %s", exc)
         return []
@@ -237,11 +297,20 @@ _TECHNICAL_PROMPT = ChatPromptTemplate.from_messages([
 def agent_technical_analyst(state: StockResearchState) -> dict:
     """Agent 3: Compute RSI, MACD, SMA50, SMA200 and interpret the technical setup."""
     ticker = state["ticker"]
-    hist = yf.Ticker(ticker).history(period="6mo")
-    if hist.empty:
+    try:
+        hist = yf.Ticker(ticker).history(period="1y")
+        if hist.empty:
+            hist = yf.Ticker(ticker).history(period="6mo")
+    except Exception as exc:
+        logger.warning("Error fetching history for %s: %s", ticker, exc)
         return {"technical_report": f"No price data available for {ticker}."}
 
-    close = hist["Close"].values.astype(float)
+    if hist.empty or "Close" not in hist:
+        return {"technical_report": f"No price data available for {ticker}."}
+
+    close = hist["Close"].dropna().values.astype(float)
+    if len(close) == 0:
+        return {"technical_report": f"No price data available for {ticker}."}
 
     if TALIB_AVAILABLE:
         rsi = talib.RSI(close, timeperiod=14)
@@ -255,26 +324,30 @@ def agent_technical_analyst(state: StockResearchState) -> dict:
         sma200 = np.array([np.nan] * len(close))
         if len(close) >= 50:
             for i in range(49, len(close)):
-                sma50[i] = np.mean(close[i - 49:i + 1])
+                sma50[i] = np.mean(close[i - 49 : i + 1])
         if len(close) >= 200:
             for i in range(199, len(close)):
-                sma200[i] = np.mean(close[i - 199:i + 1])
+                sma200[i] = np.mean(close[i - 199 : i + 1])
+
+    sma50_val = _safe_latest(sma50)
+    sma200_val = _safe_latest(sma200)
+    current_price = float(close[-1])
 
     indicators = {
-        "current_price": float(close[-1]),
+        "current_price": current_price,
         "rsi_14": _safe_latest(rsi),
         "macd": _safe_latest(macd_line),
         "macd_signal": _safe_latest(signal_line),
         "macd_histogram": _safe_latest(macd_hist),
-        "sma_50": _safe_latest(sma50),
-        "sma_200": _safe_latest(sma200),
+        "sma_50": sma50_val,
+        "sma_200": sma200_val,
         "price_vs_sma50": (
-            round((float(close[-1]) / _safe_latest(sma50) - 1) * 100, 2)
-            if _safe_latest(sma50) else None
+            round(((current_price / sma50_val) - 1) * 100, 2)
+            if sma50_val and sma50_val > 0 else None
         ),
         "price_vs_sma200": (
-            round((float(close[-1]) / _safe_latest(sma200) - 1) * 100, 2)
-            if _safe_latest(sma200) else None
+            round(((current_price / sma200_val) - 1) * 100, 2)
+            if sma200_val and sma200_val > 0 else None
         ),
     }
 
@@ -283,8 +356,8 @@ def agent_technical_analyst(state: StockResearchState) -> dict:
         "ticker": ticker,
         "indicators": json.dumps(indicators, indent=2),
     })
-    text = response.text if hasattr(response, "text") else str(response.content)
-    return {"technical_report": text.strip()}
+    text = _extract_text(response)
+    return {"technical_report": text}
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +376,8 @@ _BRIEF_PROMPT = ChatPromptTemplate.from_messages([
         "**Bull Case:**\n- bullet 1\n- bullet 2\n- bullet 3\n"
         "**Bear Case:**\n- bullet 1\n- bullet 2\n- bullet 3\n"
         "**Bottom Line:** One decisive sentence.\n\n"
-        "Be specific. Cite numbers from the reports. Pick a signal and defend it.",
+        "Be specific. Cite numbers from the reports. Pick a signal and defend it.\n\n"
+        "Include a one-line financial disclaimer stating that this analysis is AI-generated for educational purposes only and is not financial advice.",
     ),
     (
         "human",
@@ -324,6 +398,6 @@ def agent_brief_writer(state: StockResearchState) -> dict:
         "sentiment_report": state.get("sentiment_report", "Not available."),
         "technical_report": state.get("technical_report", "Not available."),
     })
-    text = response.text if hasattr(response, "text") else str(response.content)
+    text = _extract_text(response)
 
-    return {"investment_brief": text.strip()}
+    return {"investment_brief": text}

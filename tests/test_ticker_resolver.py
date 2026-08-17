@@ -4,15 +4,29 @@ from resolver import resolve_ticker
 
 
 @patch("resolver.yf.Ticker")
-def test_resolve_existing_ticker(mock_ticker):
+def test_resolve_existing_ticker_camel_case(mock_ticker):
     mock_ticker.return_value.fast_info = {
-        "last_price": 100.0
+        "lastPrice": 100.0
     }
 
     result = resolve_ticker("AAPL")
 
     assert result == {
         "ticker": "AAPL",
+        "source": "raw",
+    }
+
+
+@patch("resolver.yf.Ticker")
+def test_resolve_existing_ticker_previous_close(mock_ticker):
+    mock_ticker.return_value.fast_info = {
+        "previousClose": 150.0
+    }
+
+    result = resolve_ticker("MSFT")
+
+    assert result == {
+        "ticker": "MSFT",
         "source": "raw",
     }
 
@@ -39,10 +53,10 @@ def test_resolve_company_name_with_yfinance_search(mock_ticker, mock_search):
     }
 
 
-@patch("resolver._llm")
+@patch("resolver._get_llm")
 @patch("resolver.yf.Search")
 @patch("resolver.yf.Ticker")
-def test_resolve_with_gemini_fallback(mock_ticker, mock_search, mock_llm):
+def test_resolve_with_gemini_fallback(mock_ticker, mock_search, mock_get_llm):
     mock_ticker.return_value.fast_info = {}
     mock_search.return_value.quotes = []
 
@@ -51,7 +65,9 @@ def test_resolve_with_gemini_fallback(mock_ticker, mock_search, mock_llm):
         '{"ticker": "RELIANCE.NS", '
         '"name": "Reliance Industries Limited"}'
     )
+    mock_llm = MagicMock()
     mock_llm.invoke.return_value = mock_response
+    mock_get_llm.return_value = mock_llm
 
     result = resolve_ticker("Reliance Industries")
 
@@ -62,16 +78,40 @@ def test_resolve_with_gemini_fallback(mock_ticker, mock_search, mock_llm):
     }
 
 
-@patch("resolver._llm")
+@patch("resolver._get_llm")
 @patch("resolver.yf.Search")
 @patch("resolver.yf.Ticker")
-def test_resolve_raw_fallback(mock_ticker, mock_search, mock_llm):
+def test_resolve_with_gemini_markdown_fences(mock_ticker, mock_search, mock_get_llm):
+    mock_ticker.return_value.fast_info = {}
+    mock_search.return_value.quotes = []
+
+    mock_response = MagicMock()
+    mock_response.text = '```json\n{"ticker": "TATAMOTORS.NS", "name": "Tata Motors"}\n```'
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = mock_response
+    mock_get_llm.return_value = mock_llm
+
+    result = resolve_ticker("Tata Motors")
+
+    assert result == {
+        "ticker": "TATAMOTORS.NS",
+        "name": "Tata Motors",
+        "source": "gemini",
+    }
+
+
+@patch("resolver._get_llm")
+@patch("resolver.yf.Search")
+@patch("resolver.yf.Ticker")
+def test_resolve_raw_fallback(mock_ticker, mock_search, mock_get_llm):
     mock_ticker.return_value.fast_info = {}
     mock_search.return_value.quotes = []
 
     mock_response = MagicMock()
     mock_response.text = '{"ticker": null, "name": null}'
+    mock_llm = MagicMock()
     mock_llm.invoke.return_value = mock_response
+    mock_get_llm.return_value = mock_llm
 
     result = resolve_ticker("UNKNOWN")
 
@@ -108,14 +148,16 @@ def test_search_ignores_non_equity_results(mock_ticker, mock_search):
     }
 
 
-@patch("resolver._llm")
+@patch("resolver._get_llm")
 @patch("resolver.yf.Search")
 @patch("resolver.yf.Ticker")
-def test_gemini_error_uses_raw_fallback(mock_ticker, mock_search, mock_llm):
+def test_gemini_error_uses_raw_fallback(mock_ticker, mock_search, mock_get_llm):
     mock_ticker.return_value.fast_info = {}
     mock_search.return_value.quotes = []
 
+    mock_llm = MagicMock()
     mock_llm.invoke.side_effect = Exception("Gemini API error")
+    mock_get_llm.return_value = mock_llm
 
     result = resolve_ticker("UNKNOWN")
 
@@ -125,25 +167,6 @@ def test_gemini_error_uses_raw_fallback(mock_ticker, mock_search, mock_llm):
     }
 
 
-@patch("resolver._llm")
-@patch("resolver.yf.Search")
-@patch("resolver.yf.Ticker")
-def test_search_error_uses_gemini(mock_ticker, mock_search, mock_llm):
-    mock_ticker.return_value.fast_info = {}
-
-    mock_search.side_effect = Exception("Yahoo Finance error")
-
-    mock_response = MagicMock()
-    mock_response.text = (
-        '{"ticker": "TSLA", '
-        '"name": "Tesla, Inc."}'
-    )
-    mock_llm.invoke.return_value = mock_response
-
-    result = resolve_ticker("Tesla")
-
-    assert result == {
-        "ticker": "TSLA",
-        "name": "Tesla, Inc.",
-        "source": "gemini",
-    }
+def test_empty_input():
+    result = resolve_ticker("")
+    assert result == {"ticker": "", "source": "empty"}

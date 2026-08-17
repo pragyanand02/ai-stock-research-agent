@@ -6,15 +6,46 @@ Run:  streamlit run app.py
 import os
 import sys
 
-import streamlit as st
 from dotenv import load_dotenv
+import streamlit as st
 import yfinance as yf
+
+# Ensure local imports work reliably
+sys.path.insert(0, os.path.dirname(__file__))
+
+from graph import graph
 from resolver import resolve_ticker
 
 load_dotenv()
 
-sys.path.insert(0, os.path.dirname(__file__))
-from graph import graph  # noqa: E402
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
+
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
+def cached_resolve_ticker(user_input: str) -> dict:
+    return resolve_ticker(user_input)
+
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
+def run_research(ticker: str) -> dict:
+    return graph.invoke({"ticker": ticker})
+
+
+def get_currency_symbol(currency_code: str) -> str:
+    if not currency_code:
+        return "$"
+    symbols = {
+        "USD": "$",
+        "INR": "₹",
+        "EUR": "€",
+        "GBP": "£",
+        "JPY": "¥",
+        "CAD": "CA$",
+        "AUD": "A$",
+        "CNY": "¥",
+    }
+    return symbols.get(currency_code.upper(), f"{currency_code} ")
+
 
 st.set_page_config(
     page_title="AI Stock Research Brief",
@@ -22,10 +53,16 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
 st.title("📈 AI Stock Research & Investment Brief Generator")
 st.caption("Powered by LangGraph • Google Gemini • Yahoo Finance • Streamlit")
+st.warning(
+    "⚠️ This is AI-generated analysis for educational purposes only. "
+    "It is not financial advice. Always do your own research and consult "
+    "a licensed financial advisor before making investment decisions."
+)
 st.markdown(
-    "Enter a stock ticker. Three research agents run in **parallel** (fundamentals, news sentiment, "
+    "Enter a stock ticker or company name. Three research agents run in **parallel** (fundamentals, news sentiment, "
     "technicals), then an AI brief writer synthesizes an opinionated one-page investment brief."
 )
 
@@ -38,23 +75,22 @@ with st.sidebar:
     ).strip()
     time_period = st.selectbox(
         "Chart Time Period",
-        ["5d", "1mo", "3mo", "6mo", "1y"],
+        ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"],
         index=1,
     )
     run_button = st.button("🔍 Generate Brief", type="primary", disabled=(not ticker_input))
     st.markdown("---")
     st.markdown(
-    "**Examples:** Apple · Tata Motors · MSFT · GOOGL · RELIANCE.NS · INFY.NS"
-)
-    
+        "**Examples:** Apple · Tata Motors · MSFT · GOOGL · RELIANCE.NS · INFY.NS"
+    )
+
 if run_button and ticker_input:
     with st.spinner(f"Resolving **{ticker_input}** to a ticker symbol..."):
-        resolved = resolve_ticker(ticker_input)
+        resolved = cached_resolve_ticker(ticker_input)
 
-    resolved_ticker = resolved["ticker"]
-    if resolved["source"] in ("search", "gemini"):
+    resolved_ticker = resolved.get("ticker", "").strip()
+    if resolved.get("source") in ("search", "gemini"):
         company_name = resolved.get("name")
-
         if company_name:
             st.caption(
                 f'🔎 Resolved "{ticker_input}" → **{resolved_ticker}** ({company_name})'
@@ -67,60 +103,77 @@ if run_button and ticker_input:
     if not resolved_ticker:
         st.error("❌ Could not resolve the stock ticker.")
         st.stop()
-    with st.spinner(f"Running 3 parallel research agents for **{ticker_input}**… (30–60 seconds)"):
+
+    with st.spinner(f"Running 3 parallel research agents for **{resolved_ticker}**… (30–60 seconds)"):
         stock = yf.Ticker(resolved_ticker)
-        hist = stock.history(period=time_period)
+        try:
+            hist = stock.history(period=time_period)
+        except Exception as exc:
+            st.error(f"❌ Error fetching price data: {exc}")
+            st.stop()
 
         if hist.empty:
             st.error("❌ Invalid ticker or no market data available.")
             st.stop()
+
         try:
-            result = graph.invoke({"ticker": resolved_ticker})
+            result = run_research(resolved_ticker)
         except Exception as e:
-            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+            err_str = str(e)
+            if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
                 st.error("⚠️ Gemini API rate limit exceeded. Please wait 1 minute and try again.")
             else:
-                st.error(f"❌ Error: {e}")
+                st.error(f"❌ Error during research: {e}")
             st.stop()
 
+    # --- Company Header & Price Chart ---
     try:
-        company_name = stock.info.get("longName", ticker_input)
-        sector = stock.info.get("sector", "N/A")
-        industry = stock.info.get("industry", "N/A")
-        high_52w = stock.info.get("fiftyTwoWeekHigh", "N/A")
-        low_52w = stock.info.get("fiftyTwoWeekLow", "N/A")
-        
-        current_price = hist["Close"].iloc[-1]        
+        info = stock.info or {}
+        company_name = info.get("longName") or info.get("shortName") or resolved.get("name") or resolved_ticker
+        sector = info.get("sector", "N/A")
+        industry = info.get("industry", "N/A")
+        high_52w = info.get("fiftyTwoWeekHigh", "N/A")
+        low_52w = info.get("fiftyTwoWeekLow", "N/A")
+        currency = info.get("currency", "USD")
+        curr_sym = get_currency_symbol(currency)
+
+        current_price = float(hist["Close"].iloc[-1])
         st.subheader(f"🏢 {company_name}")
-        st.caption(f"Sector: {sector}")
-        st.caption(f"Industry: {industry}")
-        st.write(f"📈 52W High: {high_52w}")
-        st.write(f"📉 52W Low: {low_52w}")
-        st.metric("📈 Current Stock Price", f"${current_price:.2f}")
+        st.caption(f"Sector: {sector} | Industry: {industry}")
+
+        m_col1, m_col2, m_col3 = st.columns(3)
+        with m_col1:
+            st.metric("📈 Current Stock Price", f"{curr_sym}{current_price:.2f}")
+        with m_col2:
+            st.metric("52W High", f"{curr_sym}{high_52w}" if isinstance(high_52w, (int, float)) else f"{high_52w}")
+        with m_col3:
+            st.metric("52W Low", f"{curr_sym}{low_52w}" if isinstance(low_52w, (int, float)) else f"{low_52w}")
+
         st.divider()
         st.subheader("📉 Stock Price Trend")
         st.line_chart(hist["Close"])
-        st.caption(f"Closing price for selected period: {time_period}")
-        st.write(f"📊 Total data points: {len(hist)}")
-        st.write(f"📅 Date Range: {hist.index.min().date()} → {hist.index.max().date()}")
-    except Exception:
-        st.warning("⚠️ Company details could not be loaded.")
+        st.caption(
+            f"Closing price for selected period: {time_period} "
+            f"({hist.index.min().date()} → {hist.index.max().date()}) • {len(hist)} data points"
+        )
+    except Exception as exc:
+        st.warning(f"⚠️ Could not load company overview details: {exc}")
+
     # --- Investment Brief (hero section) ---
- 
-    st.success(f"Research complete for **{ticker_input}**!")
+    st.divider()
+    st.success(f"Research complete for **{resolved_ticker}**!")
     st.toast("Research completed successfully! 🎉")
-    st.balloons()
+
     st.subheader("📋 Investment Brief")
-    st.caption("AI-generated summary based on fundamentals, news sentiment, and technical analysis.")
-    st.info(f"Analyzed Stock: {ticker_input}")
-    brief = result.get("investment_brief", "No brief generated.")
-    st.markdown("### 🤖 AI Generated Investment Summary")
-    st.markdown(brief)
+    st.caption("AI-generated summary synthesized from fundamentals, news sentiment, and technical indicators.")
     
+    brief = result.get("investment_brief", "No brief generated.")
+    st.markdown(brief)
+
     st.download_button(
         label="📥 Download Investment Brief",
         data=brief,
-        file_name=f"{ticker_input}_investment_brief.txt",
+        file_name=f"{resolved_ticker}_investment_brief.txt",
         mime="text/plain",
         help="Download the AI-generated investment brief as a text file.",
         use_container_width=True,
@@ -134,14 +187,14 @@ if run_button and ticker_input:
     with col1:
         st.subheader("🏦 Fundamentals")
         st.caption("Company financial health, valuation, and key metrics")
-        st.markdown(result.get("fundamentals_report", "No report."))
+        st.markdown(result.get("fundamentals_report", "No report available."))
 
     with col2:
         st.subheader("📰 News Sentiment")
         st.caption("Latest market news and AI sentiment analysis")
-        st.markdown(result.get("sentiment_report", "No report."))
+        st.markdown(result.get("sentiment_report", "No report available."))
 
     with col3:
         st.subheader("📊 Technical Analysis")
         st.caption("Technical indicators, trend analysis, and momentum")
-        st.markdown(result.get("technical_report", "No report."))
+        st.markdown(result.get("technical_report", "No report available."))
