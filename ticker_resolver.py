@@ -1,9 +1,9 @@
 import json
-
+import logging
 import yfinance as yf
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-
+logger = logging.getLogger(__name__)
 _llm = None
 
 
@@ -37,8 +37,8 @@ def resolve_ticker(user_input: str) -> dict:
                 "source": "raw",
             }
 
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Raw ticker validation failed: %s", exc)
 
     # Search Path: search for the company name or ticker.
     try:
@@ -56,8 +56,8 @@ def resolve_ticker(user_input: str) -> dict:
                         "source": "search",
                     }
 
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Yahoo Finance ticker search failed: %s", exc)
 
     # Gemini Fallback.
     try:
@@ -65,6 +65,10 @@ def resolve_ticker(user_input: str) -> dict:
             f"""
             Identify the Yahoo Finance stock ticker for this company:
             {user_input}
+            Ticker conventions:
+            - For NSE India stocks, use the .NS suffix.
+            - For BSE India stocks, use the .BO suffix.
+            - For US stocks, use no exchange suffix.
 
             Return ONLY valid JSON in this exact format:
             {{
@@ -90,7 +94,8 @@ def resolve_ticker(user_input: str) -> dict:
                 "source": "gemini",
             }
 
-    except Exception:
+    except Exception as exc:
+        logger.warning("Gemini ticker resolution failed: %s", exc)
         pass
 
     # Raw fallback.

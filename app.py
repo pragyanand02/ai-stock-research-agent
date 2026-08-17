@@ -32,8 +32,8 @@ st.markdown(
 with st.sidebar:
     st.header("Stock Lookup")
     ticker_input = st.text_input(
-        "Ticker Symbol",
-        placeholder="e.g. MSFT, AAPL, RELIANCE.NS",
+        "Company Name or Ticker Symbol",
+        placeholder="e.g. Apple, Tata Motors, MSFT, RELIANCE.NS",
         help="Use .NS for NSE India, .BO for BSE India",
     ).strip()
     time_period = st.selectbox(
@@ -43,12 +43,26 @@ with st.sidebar:
     )
     run_button = st.button("🔍 Generate Brief", type="primary", disabled=(not ticker_input))
     st.markdown("---")
-    st.markdown("**Examples:** MSFT · GOOGL · TSLA · RELIANCE.NS · INFY.NS")
+    st.markdown(
+    "**Examples:** Apple · Tata Motors · MSFT · GOOGL · RELIANCE.NS · INFY.NS"
+)
     
 if run_button and ticker_input:
-    resolved = resolve_ticker(ticker_input)
+    with st.spinner(f"Resolving **{ticker_input}** to a ticker symbol..."):
+        resolved = resolve_ticker(ticker_input)
 
     resolved_ticker = resolved["ticker"]
+    if resolved["source"] in ("search", "gemini"):
+        company_name = resolved.get("name")
+
+        if company_name:
+            st.caption(
+                f'🔎 Resolved "{ticker_input}" → **{resolved_ticker}** ({company_name})'
+            )
+        else:
+            st.caption(
+                f'🔎 Resolved "{ticker_input}" → **{resolved_ticker}**'
+            )
 
     if not resolved_ticker:
         st.error("❌ Could not resolve the stock ticker.")
@@ -92,10 +106,7 @@ if run_button and ticker_input:
     except Exception:
         st.warning("⚠️ Company details could not be loaded.")
     # --- Investment Brief (hero section) ---
-    if resolved_ticker != ticker_input.upper():
-        st.info(
-            f"🔎 Resolved **{ticker_input}** → **{resolved_ticker}**"
-        )
+ 
     st.success(f"Research complete for **{ticker_input}**!")
     st.toast("Research completed successfully! 🎉")
     st.balloons()
