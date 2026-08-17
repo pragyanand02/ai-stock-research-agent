@@ -1,9 +1,9 @@
 from unittest.mock import MagicMock, patch
 
-from ticker_resolver import resolve_ticker
+from resolver import resolve_ticker
 
 
-@patch("ticker_resolver.yf.Ticker")
+@patch("resolver.yf.Ticker")
 def test_resolve_existing_ticker(mock_ticker):
     mock_ticker.return_value.fast_info = {
         "last_price": 100.0
@@ -17,8 +17,8 @@ def test_resolve_existing_ticker(mock_ticker):
     }
 
 
-@patch("ticker_resolver.yf.Search")
-@patch("ticker_resolver.yf.Ticker")
+@patch("resolver.yf.Search")
+@patch("resolver.yf.Ticker")
 def test_resolve_company_name_with_yfinance_search(mock_ticker, mock_search):
     mock_ticker.return_value.fast_info = {}
 
@@ -39,9 +39,9 @@ def test_resolve_company_name_with_yfinance_search(mock_ticker, mock_search):
     }
 
 
-@patch("ticker_resolver._llm")
-@patch("ticker_resolver.yf.Search")
-@patch("ticker_resolver.yf.Ticker")
+@patch("resolver._llm")
+@patch("resolver.yf.Search")
+@patch("resolver.yf.Ticker")
 def test_resolve_with_gemini_fallback(mock_ticker, mock_search, mock_llm):
     mock_ticker.return_value.fast_info = {}
     mock_search.return_value.quotes = []
@@ -62,9 +62,9 @@ def test_resolve_with_gemini_fallback(mock_ticker, mock_search, mock_llm):
     }
 
 
-@patch("ticker_resolver._llm")
-@patch("ticker_resolver.yf.Search")
-@patch("ticker_resolver.yf.Ticker")
+@patch("resolver._llm")
+@patch("resolver.yf.Search")
+@patch("resolver.yf.Ticker")
 def test_resolve_raw_fallback(mock_ticker, mock_search, mock_llm):
     mock_ticker.return_value.fast_info = {}
     mock_search.return_value.quotes = []
@@ -81,8 +81,8 @@ def test_resolve_raw_fallback(mock_ticker, mock_search, mock_llm):
     }
 
 
-@patch("ticker_resolver.yf.Search")
-@patch("ticker_resolver.yf.Ticker")
+@patch("resolver.yf.Search")
+@patch("resolver.yf.Ticker")
 def test_search_ignores_non_equity_results(mock_ticker, mock_search):
     mock_ticker.return_value.fast_info = {}
 
@@ -108,9 +108,9 @@ def test_search_ignores_non_equity_results(mock_ticker, mock_search):
     }
 
 
-@patch("ticker_resolver._llm")
-@patch("ticker_resolver.yf.Search")
-@patch("ticker_resolver.yf.Ticker")
+@patch("resolver._llm")
+@patch("resolver.yf.Search")
+@patch("resolver.yf.Ticker")
 def test_gemini_error_uses_raw_fallback(mock_ticker, mock_search, mock_llm):
     mock_ticker.return_value.fast_info = {}
     mock_search.return_value.quotes = []
@@ -125,9 +125,9 @@ def test_gemini_error_uses_raw_fallback(mock_ticker, mock_search, mock_llm):
     }
 
 
-@patch("ticker_resolver._llm")
-@patch("ticker_resolver.yf.Search")
-@patch("ticker_resolver.yf.Ticker")
+@patch("resolver._llm")
+@patch("resolver.yf.Search")
+@patch("resolver.yf.Ticker")
 def test_search_error_uses_gemini(mock_ticker, mock_search, mock_llm):
     mock_ticker.return_value.fast_info = {}
 

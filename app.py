@@ -9,7 +9,7 @@ import sys
 import streamlit as st
 from dotenv import load_dotenv
 import yfinance as yf
-from ticker_resolver import resolve_ticker
+from resolver import resolve_ticker
 
 load_dotenv()
 
