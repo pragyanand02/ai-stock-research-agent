@@ -1,4 +1,4 @@
-﻿# AI Stock Research & Investment Brief Generator (v2.0)
+# AI Stock Research & Investment Brief Generator (v2.0)
 An AI-powered institutional-grade stock research and investment brief generator built using **LangGraph**, **Google Gemini**, **Yahoo Finance**, **Plotly**, and **Streamlit**.
 
 ## ✨ Key Features
@@ -14,7 +14,7 @@ An AI-powered institutional-grade stock research and investment brief generator 
 ---
 
 ## 🛠️ Tech Stack
-- **AI & Orchestration**: LangGraph, LangChain, Google Gemini (`gemini-2.5-flash`)
+- **AI & Orchestration**: LangGraph, LangChain, Google Gemini (`gemini-3.6-flash`)
 - **Market Data**: Yahoo Finance (`yfinance`), NewsAPI
 - **Visuals & Reporting**: Plotly, FPDF2, Altair
 - **Web UI & API**: Streamlit, FastAPI, Uvicorn
@@ -66,7 +66,7 @@ User Input / Ticker
    ```env
    GOOGLE_API_KEY=your_gemini_api_key
    NEWS_API_KEY=your_newsapi_key_optional
-   GEMINI_MODEL=gemini-2.5-flash
+   GEMINI_MODEL=gemini-3.6-flash
    CACHE_TTL_SECONDS=3600
    ```
 
