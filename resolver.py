@@ -10,7 +10,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 _llm = None
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 def _get_llm():

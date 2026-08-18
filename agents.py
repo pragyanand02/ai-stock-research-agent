@@ -32,7 +32,7 @@ from state import StockResearchState
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 _api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
 
 _llm = ChatGoogleGenerativeAI(
@@ -151,6 +151,138 @@ def _compute_macd_manual(
     return macd_line, signal_line, hist
 
 
+def _compute_bollinger_bands(
+    prices: np.ndarray, period: int = 20, num_std: float = 2.0
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute Upper, Middle (SMA20), and Lower Bollinger Bands."""
+    middle = np.full(len(prices), np.nan)
+    upper = np.full(len(prices), np.nan)
+    lower = np.full(len(prices), np.nan)
+    if len(prices) < period:
+        return upper, middle, lower
+
+    for i in range(period - 1, len(prices)):
+        window = prices[i - period + 1 : i + 1]
+        mean = float(np.mean(window))
+        std = float(np.std(window))
+        middle[i] = mean
+        upper[i] = mean + (num_std * std)
+        lower[i] = mean - (num_std * std)
+
+    return upper, middle, lower
+
+
+def _compute_atr(
+    high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14
+) -> np.ndarray:
+    """Compute Average True Range (ATR)."""
+    atr = np.full(len(close), np.nan)
+    if len(close) <= period or len(high) != len(close) or len(low) != len(close):
+        return atr
+
+    tr = np.zeros(len(close))
+    tr[0] = high[0] - low[0]
+    for i in range(1, len(close)):
+        hl = high[i] - low[i]
+        hc = abs(high[i] - close[i - 1])
+        lc = abs(low[i] - close[i - 1])
+        tr[i] = max(hl, hc, lc)
+
+    atr[period - 1] = np.mean(tr[:period])
+    for i in range(period, len(close)):
+        atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
+
+    return atr
+
+
+def _compute_stochastic(
+    high: np.ndarray, low: np.ndarray, close: np.ndarray, k_period: int = 14, d_period: int = 3
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute Fast Stochastic Oscillator %K and %D."""
+    k_line = np.full(len(close), np.nan)
+    d_line = np.full(len(close), np.nan)
+    if len(close) < k_period:
+        return k_line, d_line
+
+    for i in range(k_period - 1, len(close)):
+        lowest_low = np.min(low[i - k_period + 1 : i + 1])
+        highest_high = np.max(high[i - k_period + 1 : i + 1])
+        denom = highest_high - lowest_low
+        if denom == 0:
+            k_line[i] = 50.0
+        else:
+            k_line[i] = ((close[i] - lowest_low) / denom) * 100.0
+
+    for i in range(k_period + d_period - 2, len(close)):
+        window = k_line[i - d_period + 1 : i + 1]
+        if not np.any(np.isnan(window)):
+            d_line[i] = np.mean(window)
+
+    return k_line, d_line
+
+
+def _compute_pivot_points(high: float, low: float, close: float) -> dict:
+    """Calculate Classic Floor Trader Pivot Points."""
+    p = (high + low + close) / 3.0
+    r1 = (2 * p) - low
+    s1 = (2 * p) - high
+    r2 = p + (high - low)
+    s2 = p - (high - low)
+    r3 = high + 2 * (p - low)
+    s3 = low - 2 * (high - p)
+    return {
+        "pivot": round(p, 2),
+        "r1": round(r1, 2),
+        "r2": round(r2, 2),
+        "r3": round(r3, 2),
+        "s1": round(s1, 2),
+        "s2": round(s2, 2),
+        "s3": round(s3, 2),
+    }
+
+
+def _extract_recommendation_summary(brief_text: str) -> dict:
+    """Extract structured signal, conviction, and time horizon from investment brief."""
+    summary = {
+        "signal": "HOLD",
+        "conviction": "MEDIUM",
+        "time_horizon": "Medium-term (3–12 months)",
+        "score": 5.0,
+    }
+    if not brief_text:
+        return summary
+
+    text_upper = brief_text.upper()
+    if "SIGNAL:** BUY" in text_upper or "SIGNAL: BUY" in text_upper or "STRONG BUY" in text_upper:
+        summary["signal"] = "BUY"
+        summary["score"] = 8.5
+    elif "SIGNAL:** AVOID" in text_upper or "SIGNAL: AVOID" in text_upper or "STRONG SELL" in text_upper or "SIGNAL:** SELL" in text_upper:
+        summary["signal"] = "AVOID"
+        summary["score"] = 2.0
+    elif "SIGNAL:** WATCH" in text_upper or "SIGNAL: WATCH" in text_upper:
+        summary["signal"] = "WATCH"
+        summary["score"] = 6.0
+    elif "SIGNAL:** HOLD" in text_upper or "SIGNAL: HOLD" in text_upper:
+        summary["signal"] = "HOLD"
+        summary["score"] = 5.0
+
+    if "CONVICTION:** HIGH" in text_upper or "CONVICTION: HIGH" in text_upper:
+        summary["conviction"] = "HIGH"
+    elif "CONVICTION:** LOW" in text_upper or "CONVICTION: LOW" in text_upper:
+        summary["conviction"] = "LOW"
+    elif "CONVICTION:** MEDIUM" in text_upper or "CONVICTION: MEDIUM" in text_upper:
+        summary["conviction"] = "MEDIUM"
+
+    if "SHORT-TERM" in text_upper or "< 3 MONTHS" in text_upper:
+        summary["time_horizon"] = "Short-term (< 3 months)"
+    elif "LONG-TERM" in text_upper or "> 1 YEAR" in text_upper:
+        summary["time_horizon"] = "Long-term (> 1 year)"
+    else:
+        summary["time_horizon"] = "Medium-term (3–12 months)"
+
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Agent 1 — Financial Data Analyst
 # ---------------------------------------------------------------------------
@@ -194,7 +326,10 @@ def agent_fundamentals_analyst(state: StockResearchState) -> dict:
     })
     text = _extract_text(response)
 
-    return {"fundamentals_report": text}
+    return {
+        "fundamentals_report": text,
+        "metrics": metrics,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +355,11 @@ _SENTIMENT_PROMPT = ChatPromptTemplate.from_messages([
 def agent_sentiment_scanner(state: StockResearchState) -> dict:
     """Agent 2: Fetch last 7 days of headlines and classify sentiment."""
     ticker = state["ticker"]
-    headlines = _fetch_headlines(ticker)
+    news_items = _fetch_structured_news(ticker)
+    headlines = [item.get("title", "") for item in news_items if item.get("title")]
+    if not headlines:
+        headlines = _fetch_headlines(ticker)
+
     chain = _SENTIMENT_PROMPT | _llm
     response = chain.invoke({
         "ticker": ticker,
@@ -228,7 +367,72 @@ def agent_sentiment_scanner(state: StockResearchState) -> dict:
     })
     text = _extract_text(response)
 
-    return {"sentiment_report": text}
+    return {
+        "sentiment_report": text,
+        "news_items": news_items,
+    }
+
+
+def _fetch_structured_news(ticker: str) -> list[dict]:
+    """Fetch structured news articles with titles, publishers, links, and dates."""
+    articles_list = []
+    api_key = os.getenv("NEWS_API_KEY", "")
+    if api_key:
+        try:
+            url = "https://newsapi.org/v2/everything"
+            params = {
+                "q": ticker,
+                "sortBy": "publishedAt",
+                "pageSize": 10,
+                "language": "en",
+                "apiKey": api_key,
+            }
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                for art in resp.json().get("articles", []):
+                    if art.get("title"):
+                        articles_list.append({
+                            "title": art.get("title"),
+                            "publisher": art.get("source", {}).get("name", "News"),
+                            "link": art.get("url", "#"),
+                            "published_at": art.get("publishedAt", ""),
+                        })
+                if articles_list:
+                    return articles_list
+        except Exception as exc:
+            logger.warning("NewsAPI structured fetch failed: %s", exc)
+
+    # Fallback to yfinance news
+    try:
+        raw_news = yf.Ticker(ticker).news or []
+        for item in raw_news[:10]:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title")
+            publisher = item.get("publisher", "Yahoo Finance")
+            link = item.get("link", "#")
+            pub_time = item.get("providerPublishTime", "")
+            
+            # yfinance content schema fallback
+            if not title and "content" in item and isinstance(item["content"], dict):
+                content = item["content"]
+                title = content.get("title")
+                if "provider" in content and isinstance(content["provider"], dict):
+                    publisher = content["provider"].get("displayName", publisher)
+                if "canonicalUrl" in content and isinstance(content["canonicalUrl"], dict):
+                    link = content["canonicalUrl"].get("url", link)
+
+            if title:
+                articles_list.append({
+                    "title": title,
+                    "publisher": publisher,
+                    "link": link,
+                    "published_at": str(pub_time),
+                })
+    except Exception as exc:
+        logger.warning("yfinance structured news failed: %s", exc)
+
+    return articles_list
 
 
 def _fetch_headlines(ticker: str) -> list[str]:
@@ -284,9 +488,11 @@ _TECHNICAL_PROMPT = ChatPromptTemplate.from_messages([
         "You are a technical analyst. "
         "Interpret the provided indicator values and derive a technical setup for the stock.\n\n"
         "Cover:\n"
-        "- Trend direction (price vs SMA50, SMA200 — golden cross / death cross)\n"
-        "- Momentum (RSI — overbought >70 / oversold <30)\n"
+        "- Trend direction (price vs SMA50, SMA200 — golden cross / death cross, EMA20)\n"
+        "- Momentum (RSI — overbought >70 / oversold <30, Stochastic %K/%D)\n"
+        "- Volatility & Bands (Bollinger Bands %B, ATR)\n"
         "- MACD signal (bullish crossover / bearish crossover)\n"
+        "- Support & Resistance levels\n"
         "- Overall technical stance: Bullish / Neutral / Bearish\n\n"
         "150 words max. Be specific with the numbers.",
     ),
@@ -295,7 +501,7 @@ _TECHNICAL_PROMPT = ChatPromptTemplate.from_messages([
 
 
 def agent_technical_analyst(state: StockResearchState) -> dict:
-    """Agent 3: Compute RSI, MACD, SMA50, SMA200 and interpret the technical setup."""
+    """Agent 3: Compute RSI, MACD, Bollinger Bands, ATR, SMAs, EMAs and interpret setup."""
     ticker = state["ticker"]
     try:
         hist = yf.Ticker(ticker).history(period="1y")
@@ -312,26 +518,53 @@ def agent_technical_analyst(state: StockResearchState) -> dict:
     if len(close) == 0:
         return {"technical_report": f"No price data available for {ticker}."}
 
+    high = hist["High"].dropna().values.astype(float) if "High" in hist else close
+    low = hist["Low"].dropna().values.astype(float) if "Low" in hist else close
+    volume = hist["Volume"].dropna().values.astype(float) if "Volume" in hist else np.array([])
+
     if TALIB_AVAILABLE:
         rsi = talib.RSI(close, timeperiod=14)
         macd_line, signal_line, macd_hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
         sma50 = talib.SMA(close, timeperiod=50)
         sma200 = talib.SMA(close, timeperiod=200)
+        sma20 = talib.SMA(close, timeperiod=20)
+        ema20 = talib.EMA(close, timeperiod=20)
+        bb_upper, bb_mid, bb_lower = talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)
+        atr = talib.ATR(high, low, close, timeperiod=14) if len(high) == len(close) else _compute_atr(high, low, close, 14)
+        stoch_k, stoch_d = _compute_stochastic(high, low, close, 14, 3)
     else:
         rsi = _compute_rsi_manual(close, 14)
         macd_line, signal_line, macd_hist = _compute_macd_manual(close)
         sma50 = np.array([np.nan] * len(close))
         sma200 = np.array([np.nan] * len(close))
+        sma20 = np.array([np.nan] * len(close))
+        if len(close) >= 20:
+            for i in range(19, len(close)):
+                sma20[i] = np.mean(close[i - 19 : i + 1])
         if len(close) >= 50:
             for i in range(49, len(close)):
                 sma50[i] = np.mean(close[i - 49 : i + 1])
         if len(close) >= 200:
             for i in range(199, len(close)):
                 sma200[i] = np.mean(close[i - 199 : i + 1])
+        ema20 = _compute_ema(close, 20)
+        bb_upper, bb_mid, bb_lower = _compute_bollinger_bands(close, 20, 2.0)
+        atr = _compute_atr(high, low, close, 14)
+        stoch_k, stoch_d = _compute_stochastic(high, low, close, 14, 3)
 
     sma50_val = _safe_latest(sma50)
     sma200_val = _safe_latest(sma200)
+    sma20_val = _safe_latest(sma20)
+    ema20_val = _safe_latest(ema20)
     current_price = float(close[-1])
+    bb_u_val = _safe_latest(bb_upper)
+    bb_l_val = _safe_latest(bb_lower)
+    bb_m_val = _safe_latest(bb_mid)
+    atr_val = _safe_latest(atr)
+    stoch_k_val = _safe_latest(stoch_k)
+    stoch_d_val = _safe_latest(stoch_d)
+
+    pivots = _compute_pivot_points(float(np.max(high[-20:])), float(np.min(low[-20:])), current_price) if len(high) >= 20 else {}
 
     indicators = {
         "current_price": current_price,
@@ -339,8 +572,17 @@ def agent_technical_analyst(state: StockResearchState) -> dict:
         "macd": _safe_latest(macd_line),
         "macd_signal": _safe_latest(signal_line),
         "macd_histogram": _safe_latest(macd_hist),
+        "sma_20": sma20_val,
         "sma_50": sma50_val,
         "sma_200": sma200_val,
+        "ema_20": ema20_val,
+        "bollinger_upper": bb_u_val,
+        "bollinger_middle": bb_m_val,
+        "bollinger_lower": bb_l_val,
+        "atr_14": atr_val,
+        "stochastic_k": stoch_k_val,
+        "stochastic_d": stoch_d_val,
+        "pivots": pivots,
         "price_vs_sma50": (
             round(((current_price / sma50_val) - 1) * 100, 2)
             if sma50_val and sma50_val > 0 else None
@@ -357,7 +599,10 @@ def agent_technical_analyst(state: StockResearchState) -> dict:
         "indicators": json.dumps(indicators, indent=2),
     })
     text = _extract_text(response)
-    return {"technical_report": text}
+    return {
+        "technical_report": text,
+        "technical_indicators": indicators,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -399,5 +644,9 @@ def agent_brief_writer(state: StockResearchState) -> dict:
         "technical_report": state.get("technical_report", "Not available."),
     })
     text = _extract_text(response)
+    summary = _extract_recommendation_summary(text)
 
-    return {"investment_brief": text}
+    return {
+        "investment_brief": text,
+        "recommendation_summary": summary,
+    }
