@@ -345,7 +345,7 @@ with tab_single:
         with d_col1:
             st.download_button(
                 label="📥 Download Executive PDF Report",
-                data=pdf_bytes,
+                data=bytes(pdf_bytes),
                 file_name=f"{resolved_ticker}_investment_report.pdf",
                 mime="application/pdf",
                 use_container_width=True,

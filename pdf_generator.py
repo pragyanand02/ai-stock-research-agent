@@ -205,4 +205,4 @@ def generate_stock_pdf(
     )
     pdf.multi_cell(0, 4, disclaimer, border=1, fill=True)
 
-    return pdf.output()
+    return bytes(pdf.output())
