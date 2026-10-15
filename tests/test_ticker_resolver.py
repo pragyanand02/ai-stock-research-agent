@@ -103,6 +103,30 @@ def test_resolve_with_gemini_markdown_fences(mock_ticker, mock_search, mock_get_
 @patch("resolver._get_llm")
 @patch("resolver.yf.Search")
 @patch("resolver.yf.Ticker")
+def test_resolve_with_gemini_list_content(mock_ticker, mock_search, mock_get_llm):
+    mock_ticker.return_value.fast_info = {}
+    mock_search.return_value.quotes = []
+
+    mock_response = MagicMock(spec=[])
+    mock_response.content = [
+        {"type": "text", "text": '```json\n{"ticker": "INFY.NS", "name": "Infosys Limited"}\n```'}
+    ]
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = mock_response
+    mock_get_llm.return_value = mock_llm
+
+    result = resolve_ticker("Infosys")
+
+    assert result == {
+        "ticker": "INFY.NS",
+        "name": "Infosys Limited",
+        "source": "gemini",
+    }
+
+
+@patch("resolver._get_llm")
+@patch("resolver.yf.Search")
+@patch("resolver.yf.Ticker")
 def test_resolve_raw_fallback(mock_ticker, mock_search, mock_get_llm):
     mock_ticker.return_value.fast_info = {}
     mock_search.return_value.quotes = []

@@ -19,7 +19,10 @@ class StockReportPDF(FPDF):
     def header(self):
         self.set_font("Helvetica", "B", 10)
         self.set_text_color(100, 100, 100)
-        self.cell(0, 8, f"AI Stock Research Report - {self.ticker} ({self.company_name})", border=0, align="L")
+        header_title = f"AI Stock Research Report - {self.ticker} ({self.company_name})"
+        if len(header_title) > 55:
+            header_title = header_title[:52] + "..."
+        self.cell(125, 8, header_title, border=0, align="L")
         self.cell(0, 8, datetime.now().strftime("%B %d, %Y"), border=0, align="R", new_x="LMARGIN", new_y="NEXT")
         self.set_draw_color(200, 200, 200)
         self.line(10, 18, 200, 18)
@@ -63,6 +66,10 @@ def generate_stock_pdf(
     """
     Generate an executive PDF report and return the binary content.
     """
+    ticker = _clean_text(ticker)
+    company_name = _clean_text(company_name)
+    currency_symbol = _clean_text(currency_symbol)
+
     pdf = StockReportPDF(ticker=ticker, company_name=company_name)
     pdf.add_page()
 

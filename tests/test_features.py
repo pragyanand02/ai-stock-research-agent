@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -108,6 +108,24 @@ def test_generate_stock_pdf():
         sentiment_text="Bullish news sentiment.",
         technical_text="Above SMA 50 and SMA 200.",
         metrics={"marketCap": 2800000000000, "trailingPE": 28.5},
+        recommendation={"signal": "BUY", "conviction": "HIGH", "time_horizon": "Long-term"},
+    )
+    assert isinstance(pdf_bytes, (bytes, bytearray))
+    assert len(pdf_bytes) > 500
+    assert bytes(pdf_bytes).startswith(b"%PDF")
+
+
+def test_generate_stock_pdf_with_rupee_and_unicode():
+    pdf_bytes = generate_stock_pdf(
+        ticker="RELIANCE.NS",
+        company_name="Reliance Industries Ltd.",
+        current_price=2950.75,
+        currency_symbol="₹",
+        brief_text="**Signal:** Buy\n**Thesis:** Robust refining & retail margins.",
+        fundamentals_text="Strong balance sheet — ₹15T+ valuation.",
+        sentiment_text="Bullish news sentiment • positive outlook.",
+        technical_text="Support near ₹2800.",
+        metrics={"marketCap": 15000000000000, "trailingPE": 24.2},
         recommendation={"signal": "BUY", "conviction": "HIGH", "time_horizon": "Long-term"},
     )
     assert isinstance(pdf_bytes, (bytes, bytearray))

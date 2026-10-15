@@ -1,4 +1,4 @@
-﻿"""
+"""
 Project 04 — Modern Streamlit UI for AI Stock Research & Investment Brief Generator.
 Features:
 - Tab 1: Single Stock Deep Dive with Interactive Plotly Candlestick Chart, Indicators, & PDF Export
@@ -153,13 +153,19 @@ tab_single, tab_compare, tab_watchlist = st.tabs([
 # ===========================================================================
 with tab_single:
     with st.sidebar:
+        if "selected_ticker" not in st.session_state:
+            st.session_state["selected_ticker"] = ""
+
         st.header("Stock Configuration")
         ticker_input = st.text_input(
             "Company Name or Ticker Symbol",
-            value="",
+            value=st.session_state["selected_ticker"],
             placeholder="e.g. Apple, NVDA, Tata Motors, RELIANCE.NS",
             help="Supports US symbols (AAPL), Indian symbols (.NS for NSE, .BO for BSE), and company names.",
         ).strip()
+
+        if ticker_input != st.session_state["selected_ticker"]:
+            st.session_state["selected_ticker"] = ticker_input
 
         col_p1, col_p2 = st.columns(2)
         with col_p1:
@@ -185,16 +191,18 @@ with tab_single:
         st.caption("Quick Presets:")
         preset_cols = st.columns(3)
         if preset_cols[0].button("NVDA", use_container_width=True):
-            ticker_input = "NVDA"
-            run_button = True
+            st.session_state["selected_ticker"] = "NVDA"
+            st.rerun()
         if preset_cols[1].button("AAPL", use_container_width=True):
-            ticker_input = "AAPL"
-            run_button = True
+            st.session_state["selected_ticker"] = "AAPL"
+            st.rerun()
         if preset_cols[2].button("RELIANCE", use_container_width=True):
-            ticker_input = "RELIANCE.NS"
-            run_button = True
+            st.session_state["selected_ticker"] = "RELIANCE.NS"
+            st.rerun()
 
-    if not ticker_input and not run_button:
+    active_ticker = st.session_state.get("selected_ticker", "").strip()
+
+    if not active_ticker and not run_button:
         st.info("💡 Enter a company name or ticker symbol in the sidebar and click **Analyze Stock** to generate an AI research brief.")
         
         # Feature Highlight Showcase
@@ -209,13 +217,13 @@ with tab_single:
             st.markdown("### 📊 Technical Setup")
             st.write("Calculates RSI, MACD, Bollinger Bands, ATR, SMA/EMA trends, and key support & resistance pivot points.")
 
-    if run_button or ticker_input:
-        if not ticker_input:
+    if run_button or active_ticker:
+        if not active_ticker:
             st.warning("Please enter a stock ticker or company name.")
             st.stop()
 
-        with st.spinner(f"Resolving **{ticker_input}** to market ticker..."):
-            resolved = cached_resolve_ticker(ticker_input)
+        with st.spinner(f"Resolving **{active_ticker}** to market ticker..."):
+            resolved = cached_resolve_ticker(active_ticker)
 
         resolved_ticker = resolved.get("ticker", "").strip()
         if not resolved_ticker:
@@ -264,14 +272,17 @@ with tab_single:
 
         # Metrics Bar
         m1, m2, m3, m4, m5 = st.columns(5)
+        h52 = info.get("fiftyTwoWeekHigh")
+        l52 = info.get("fiftyTwoWeekLow")
+        pe_val = info.get("trailingPE")
         with m1:
             st.metric("Current Price", f"{curr_sym}{current_price:,.2f}", f"{day_change_pct:+.2f}%")
         with m2:
-            st.metric("52W High", f"{curr_sym}{info.get('fiftyTwoWeekHigh', 'N/A')}")
+            st.metric("52W High", f"{curr_sym}{h52:,.2f}" if isinstance(h52, (int, float)) else "N/A")
         with m3:
-            st.metric("52W Low", f"{curr_sym}{info.get('fiftyTwoWeekLow', 'N/A')}")
+            st.metric("52W Low", f"{curr_sym}{l52:,.2f}" if isinstance(l52, (int, float)) else "N/A")
         with m4:
-            st.metric("Trailing P/E", f"{info.get('trailingPE', 'N/A')}")
+            st.metric("Trailing P/E", f"{pe_val:.2f}" if isinstance(pe_val, (int, float)) else "N/A")
         with m5:
             st.metric("Market Cap", format_large_number(info.get('marketCap'), curr_sym))
 
@@ -432,11 +443,10 @@ with tab_compare:
                     res = cached_resolve_ticker(sym)
                     resolved_sym = res.get("ticker", sym)
                     try:
-                        stock = yf.Ticker(resolved_sym)
-                        h = stock.history(period=comp_period)
+                        h = fetch_stock_history(resolved_sym, comp_period)
                         if not h.empty and "Close" in h:
                             hist_dict[resolved_sym] = h
-                            inf = stock.info or {}
+                            inf = fetch_stock_info(resolved_sym)
                             c_price = float(h["Close"].iloc[-1])
                             f_price = float(h["Close"].iloc[0])
                             pct_ret = round(((c_price / f_price) - 1) * 100, 2)
@@ -483,6 +493,7 @@ with tab_watchlist:
             if ticker_to_add not in st.session_state["watchlist"]:
                 st.session_state["watchlist"].append(ticker_to_add)
                 st.toast(f"Added {ticker_to_add} to watchlist!")
+                st.rerun()
 
     if st.session_state["watchlist"]:
         st.write(f"**Tracking {len(st.session_state['watchlist'])} Stocks:**")
@@ -490,21 +501,22 @@ with tab_watchlist:
         watch_rows = []
         for w_ticker in st.session_state["watchlist"]:
             try:
-                stk = yf.Ticker(w_ticker)
-                h_w = stk.history(period="5d")
+                h_w = fetch_stock_history(w_ticker, "5d")
                 if not h_w.empty and "Close" in h_w:
                     last_p = float(h_w["Close"].iloc[-1])
                     prev_p = float(h_w["Close"].iloc[-2]) if len(h_w) > 1 else last_p
                     chg_pct = ((last_p / prev_p) - 1) * 100
-                    inf_w = stk.info or {}
+                    inf_w = fetch_stock_info(w_ticker)
                     sym_c = get_currency_symbol(inf_w.get("currency", "USD"))
+                    h52_w = inf_w.get("fiftyTwoWeekHigh")
+                    l52_w = inf_w.get("fiftyTwoWeekLow")
                     watch_rows.append({
                         "Ticker": w_ticker,
                         "Company": inf_w.get("shortName", w_ticker),
                         "Price": f"{sym_c}{last_p:,.2f}",
                         "1-Day Change": f"{chg_pct:+.2f}%",
-                        "52W High": f"{sym_c}{inf_w.get('fiftyTwoWeekHigh', 'N/A')}",
-                        "52W Low": f"{sym_c}{inf_w.get('fiftyTwoWeekLow', 'N/A')}",
+                        "52W High": f"{sym_c}{h52_w:,.2f}" if isinstance(h52_w, (int, float)) else "N/A",
+                        "52W Low": f"{sym_c}{l52_w:,.2f}" if isinstance(l52_w, (int, float)) else "N/A",
                     })
             except Exception:
                 watch_rows.append({"Ticker": w_ticker, "Company": "Error loading", "Price": "N/A"})

@@ -22,7 +22,7 @@ try:
     TALIB_AVAILABLE = True
 except ImportError:
     TALIB_AVAILABLE = False
-    logging.warning("TA-Lib not available; technical indicators will use manual fallback.")
+    logging.info("TA-Lib not available; technical indicators will use manual fallback.")
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -32,7 +32,7 @@ from state import StockResearchState
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 _api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
 
 _llm = ChatGoogleGenerativeAI(
@@ -46,6 +46,20 @@ _llm_writer = ChatGoogleGenerativeAI(
     google_api_key=_api_key or None,
     temperature=0.3,
 )
+
+_FALLBACK_MODEL = "gemini-flash-lite-latest"
+_llm_fallback = None
+
+
+def _get_fallback_llm():
+    global _llm_fallback
+    if _llm_fallback is None:
+        _llm_fallback = ChatGoogleGenerativeAI(
+            model=_FALLBACK_MODEL,
+            google_api_key=_api_key or None,
+            temperature=0,
+        )
+    return _llm_fallback
 
 
 import time
@@ -74,22 +88,37 @@ def _extract_text(response: Any) -> str:
     return str(response).strip()
 
 
-def _safe_invoke_chain(chain, inputs, fallback_fn):
-    """Safely invoke LangChain LLM with retry on 429 rate limits and algorithmic fallback."""
-    for attempt in range(2):
-        try:
-            res = chain.invoke(inputs)
-            text = _extract_text(res)
-            if text:
-                return text
-        except Exception as exc:
-            err = str(exc)
-            if "RESOURCE_EXHAUSTED" in err or "429" in err:
-                logger.warning("Gemini rate limit (429) encountered. Retrying in 2s...")
-                time.sleep(2)
-            else:
-                logger.warning("LLM call failed: %s. Using algorithmic fallback.", exc)
-                break
+def _safe_invoke_chain(chain, inputs, fallback_fn, prompt_template=None):
+    """Safely invoke LangChain LLM with retry, model fallback, and algorithmic fallback."""
+    try:
+        res = chain.invoke(inputs)
+        text = _extract_text(res)
+        if text:
+            return text
+    except Exception as exc:
+        err = str(exc)
+        logger.warning("Primary LLM call failed: %s", exc)
+        # Try fallback model if prompt_template is available
+        if prompt_template is not None:
+            try:
+                fallback_chain = prompt_template | _get_fallback_llm()
+                res = fallback_chain.invoke(inputs)
+                text = _extract_text(res)
+                if text:
+                    return text
+            except Exception as f_exc:
+                logger.warning("Fallback LLM call failed: %s", f_exc)
+        elif "429" in err or "RESOURCE_EXHAUSTED" in err:
+            # Short pause and single retry if transient
+            time.sleep(1)
+            try:
+                res = chain.invoke(inputs)
+                text = _extract_text(res)
+                if text:
+                    return text
+            except Exception:
+                pass
+
     return fallback_fn()
 
 
@@ -441,6 +470,7 @@ def agent_fundamentals_analyst(state: StockResearchState) -> dict:
             "metrics": json.dumps(metrics, indent=2) if metrics else "No financial metrics found.",
         },
         fallback_fn=lambda: _generate_fallback_fundamentals(ticker, metrics),
+        prompt_template=_FUNDAMENTALS_PROMPT,
     )
 
     return {
@@ -485,6 +515,7 @@ def agent_sentiment_scanner(state: StockResearchState) -> dict:
             "headlines": "\n".join(f"- {h}" for h in headlines) if headlines else "No headlines available.",
         },
         fallback_fn=lambda: _generate_fallback_sentiment(ticker, headlines),
+        prompt_template=_SENTIMENT_PROMPT,
     )
 
     return {
@@ -631,16 +662,18 @@ def agent_technical_analyst(state: StockResearchState) -> dict:
         logger.warning("Error fetching history for %s: %s", ticker, exc)
         return {"technical_report": f"No price data available for {ticker}."}
 
-    if hist.empty or "Close" not in hist:
+    valid_cols = [c for c in ["Close", "High", "Low"] if c in hist.columns]
+    hist_clean = hist.dropna(subset=valid_cols)
+    if hist_clean.empty or "Close" not in hist_clean:
         return {"technical_report": f"No price data available for {ticker}."}
 
-    close = hist["Close"].dropna().values.astype(float)
+    close = hist_clean["Close"].values.astype(float)
     if len(close) == 0:
         return {"technical_report": f"No price data available for {ticker}."}
 
-    high = hist["High"].dropna().values.astype(float) if "High" in hist else close
-    low = hist["Low"].dropna().values.astype(float) if "Low" in hist else close
-    volume = hist["Volume"].dropna().values.astype(float) if "Volume" in hist else np.array([])
+    high = hist_clean["High"].values.astype(float) if "High" in hist_clean else close
+    low = hist_clean["Low"].values.astype(float) if "Low" in hist_clean else close
+    volume = hist_clean["Volume"].values.astype(float) if "Volume" in hist_clean else np.array([])
 
     if TALIB_AVAILABLE:
         rsi = talib.RSI(close, timeperiod=14)
@@ -721,6 +754,7 @@ def agent_technical_analyst(state: StockResearchState) -> dict:
             "indicators": json.dumps(indicators, indent=2),
         },
         fallback_fn=lambda: _generate_fallback_technical(ticker, indicators),
+        prompt_template=_TECHNICAL_PROMPT,
     )
     return {
         "technical_report": text,
@@ -773,6 +807,7 @@ def agent_brief_writer(state: StockResearchState) -> dict:
             "technical_report": tech_rep,
         },
         fallback_fn=lambda: _generate_fallback_brief(state["ticker"], fund_rep, sent_rep, tech_rep),
+        prompt_template=_BRIEF_PROMPT,
     )
     summary = _extract_recommendation_summary(text)
 

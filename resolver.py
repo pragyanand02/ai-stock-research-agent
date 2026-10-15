@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import yfinance as yf
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -10,24 +11,31 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 _llm = None
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 
-def _get_llm():
+def _get_llm(model: str = None):
     global _llm
-    if _llm is None:
+    target_model = model or GEMINI_MODEL
+    if model is not None or _llm is None:
         api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
-        _llm = ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL,
+        llm_instance = ChatGoogleGenerativeAI(
+            model=target_model,
             google_api_key=api_key or None,
             temperature=0,
         )
+        if model is None:
+            _llm = llm_instance
+        return llm_instance
     return _llm
 
 
 def _clean_json_response(text: str) -> str:
     """Clean markdown code fences from LLM output."""
     clean = text.strip()
+    match = re.search(r"\{[^{}]*\}", clean)
+    if match:
+        return match.group(0)
     if clean.startswith("```json"):
         clean = clean[7:]
     elif clean.startswith("```"):
@@ -89,43 +97,44 @@ def resolve_ticker(user_input: str) -> dict:
         logger.warning("Yahoo Finance ticker search failed: %s", exc)
 
     # Gemini Fallback.
-    try:
-        llm = _get_llm()
-        response = llm.invoke(
-            f"""
-            Identify the Yahoo Finance stock ticker for this company:
-            {user_input}
-            Ticker conventions:
-            - For NSE India stocks, use the .NS suffix.
-            - For BSE India stocks, use the .BO suffix.
-            - For US stocks, use no exchange suffix.
+    from agents import _extract_text
+    prompt_str = f"""
+    Identify the Yahoo Finance stock ticker for this company:
+    {user_input}
+    Ticker conventions:
+    - For NSE India stocks, use the .NS suffix.
+    - For BSE India stocks, use the .BO suffix.
+    - For US stocks, use no exchange suffix.
 
-            Return ONLY valid JSON in this exact format:
-            {{
-                "ticker": "AAPL",
-                "name": "Apple Inc."
-            }}
+    Return ONLY valid JSON in this exact format:
+    {{
+        "ticker": "AAPL",
+        "name": "Apple Inc."
+    }}
 
-            If you cannot identify the company, return:
-            {{
-                "ticker": null,
-                "name": null
-            }}
-            """
-        )
+    If you cannot identify the company, return:
+    {{
+        "ticker": null,
+        "name": null
+    }}
+    """
+    for model_name in [GEMINI_MODEL, "gemini-flash-lite-latest"]:
+        try:
+            llm = _get_llm(model=model_name)
+            response = llm.invoke(prompt_str)
 
-        text = response.text if hasattr(response, "text") and response.text else str(response.content)
-        cleaned_text = _clean_json_response(text)
-        data = json.loads(cleaned_text)
+            text = _extract_text(response)
+            cleaned_text = _clean_json_response(text)
+            data = json.loads(cleaned_text)
 
-        if data.get("ticker"):
-            return {
-                "ticker": data["ticker"],
-                "name": data.get("name"),
-                "source": "gemini",
-            }
-    except Exception as exc:
-        logger.warning("Gemini ticker resolution failed: %s", exc)
+            if data.get("ticker"):
+                return {
+                    "ticker": data["ticker"],
+                    "name": data.get("name"),
+                    "source": "gemini",
+                }
+        except Exception as exc:
+            logger.warning("Gemini ticker resolution failed with model %s: %s", model_name, exc)
 
     # Raw fallback.
     return {
